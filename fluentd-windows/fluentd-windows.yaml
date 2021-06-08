@@ -1,0 +1,111 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluentd-windows
+  namespace: amazon-cloudwatch
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: fluentd-windows
+roleRef:
+  kind: ClusterRole
+  name: fluentd-windows
+  apiGroup: rbac.authorization.k8s.io
+subjects:
+- kind: ServiceAccount
+  name: fluentd-windows
+  namespace: amazon-cloudwatch
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentd-windows
+  namespace: amazon-cloudwatch
+  labels:
+    k8s-app: fluentd-windows
+spec:
+  selector:
+    matchLabels:
+      name: fluentd-windows
+  template:
+    metadata:
+      labels:
+        name: fluentd-windows
+    spec:
+      nodeSelector:
+        beta.kubernetes.io/os: windows
+      # Windows Build only supported on EKS 1.17+. If lower version remove the selector
+        node.kubernetes.io/windows-build: '10.0.17763'
+      serviceAccount: fluentd-windows
+      serviceAccountName: fluentd-windows
+      # Because the fluentd requires to write on /etc/fluentd/ but we mount the config using a configmap 
+      # which is read-only, this initContainers needs to be used to copy from RO folder to RW folder.
+      initContainers:
+      - name: copy-fluentd-config
+        image: docker.tools.tsys.aws/windows/servercore:ltsc2019
+        command: ['powershell', '-command', 'cp /etc/temp/*.conf /etc/fluent/']
+        volumeMounts:
+        - name: fluentdconftemp
+          mountPath: /etc/temp/
+        - name: fluentdconf
+          mountPath: /etc/fluent
+      tolerations:
+      - effect: NoSchedule
+        key: os
+        operator: Equal
+        value: Win1809
+      containers:
+      - name: fluentd-windows
+        image: docker.tools.tsys.aws/windows/winfluentd:1809
+        env:
+          - name: AWS_REGION
+            valueFrom:
+              configMapKeyRef:
+                name: fluentd-windows
+                key: AWS_REGION
+          - name: CLUSTER_NAME
+            valueFrom:
+              configMapKeyRef:
+                name: fluentd-windows
+                key: CLUSTER_NAME
+        resources:
+          limits:
+            memory: 2Gi
+          requests:
+            cpu: 100m
+            memory: 1Gi
+        volumeMounts:
+        - name: fluentdconftemp
+          mountPath: /etc/temp/
+        - name: fluentdconf
+          mountPath: /etc/fluent
+        - name: varlog
+          mountPath: /var/log
+        - name: varlibdockercontainers
+          mountPath: C:\ProgramData\Docker\containers
+          readOnly: true
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: fluentdconftemp
+        configMap:
+          name: fluentd-windows
+      - name: varlog
+        hostPath:
+          path: C:\var\log
+      - name: varlibdockercontainers
+        hostPath:
+          path: C:\ProgramData\Docker\containers
+      - name: fluentdconf
+        emptyDir: {}
